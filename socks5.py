@@ -115,6 +115,77 @@ def first_non_none_future(fs):
                 return res
         # None of the done futures were good, so keep going
         fs = not_done
+def set_proxy_host(iftypes, PROXY_HOST):
+    initial_output = ''
+    if iftypes['bridge']:
+        iface = next((iface for iface in iftypes['bridge'] if iface.addr.family == socket.AF_INET), None)
+        if iface:
+            initial_output = "Assuming proxy will be accessed over hotspot (%s) at %s\n" % (iface.name, iface.addr.address)
+            PROXY_HOST = iface.addr.address
+    elif iftypes['en']:
+        iface = next((iface for iface in iftypes['en'] if iface.addr.family == socket.AF_INET), None)
+        if iface:
+            initial_output += "Assuming proxy will be accessed over WiFi (%s) at %s\n" % (iface.name, iface.addr.address)
+            PROXY_HOST = iface.addr.address
+    else:
+        initial_output += 'Warning: could not get WiFi address; assuming %s\n' % PROXY_HOST
+    
+    return PROXY_HOST, initial_output
+
+def set_connect_host(iftypes, connection_preference, initial_output):
+    ipv4_output = ''
+    ipv6_output = ''
+    CONNECT_HOST_IPV4 = None
+    CONNECT_HOST_IPV6 = None
+
+    if connection_preference == 'cell':
+        if iftypes['cell']:
+            iface_ipv4 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET), None)
+            iface_ipv6 = None
+
+            if iface_ipv4:
+                ipv4_output += "Will connect to IPv4 servers over interface %s at %s\n" % (iface_ipv4.name, iface_ipv4.addr.address)
+                CONNECT_HOST_IPV4 = iface_ipv4.addr.address
+
+                iface_ipv6_list = [iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6 and iface.addr.address and is_globally_routable(iface.addr.address) and iface.name == iface_ipv4.name]
+
+                iface_ipv6 = iface_ipv6_list[-1] if iface_ipv6_list else None
+
+            if iface_ipv6 is None:
+                iface_ipv6_list = [iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6 and iface.addr.address and is_globally_routable(iface.addr.address)]
+
+                iface_ipv6 = iface_ipv6_list[-1] if iface_ipv6_list else None
+
+            if iface_ipv6:
+                ipv6_output += "Will connect to IPv6 servers over interface %s at %s\n" % (iface_ipv6.name, iface_ipv6.addr.address)
+                try:
+                    test_socket = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+                    test_socket.settimeout(5)
+                    test_socket.bind((iface_ipv6.addr.address, 0))
+                    test_socket.connect((resolve_address("www.google.com")["ipv6"], 80))
+                    test_socket.close()
+                    CONNECT_HOST_IPV6 = iface_ipv6.addr.address
+                except Exception as e:
+                    ipv6_output += "Failed to connect to www.google.com over IPv6 due to: %s\n" % str(e)
+                    CONNECT_HOST_IPV6 = None
+                finally:
+                    test_socket.close()
+
+    elif connection_preference == 'wifi':
+        if iftypes['en']:
+            iface_ipv4 = next((iface for iface in iftypes['en'] if iface.addr.family == socket.AF_INET), None)
+
+            if iface_ipv4:
+                ipv4_output += "Will connect to IPv4 servers over interface %s at %s\n" % (iface_ipv4.name, iface_ipv4.addr.address)
+                CONNECT_HOST_IPV4 = iface_ipv4.addr.address
+
+            iface_ipv6 = next((iface for iface in iftypes['en'] if iface.addr.family == socket.AF_INET6 and is_globally_routable(iface.addr.address)), None)
+
+            if iface_ipv6:
+                ipv6_output += "Will connect to IPv6 servers over interface %s at %s\n" % (iface_ipv6.name, iface_ipv6.addr.address)
+                CONNECT_HOST_IPV6 = iface_ipv6.addr.address
+
+    return CONNECT_HOST_IPV4, CONNECT_HOST_IPV6, ipv4_output, ipv6_output
 
 try:
     # We want the WiFi address so that clients know what IP to use.
@@ -146,110 +217,9 @@ try:
         else:
             iftypes['cell'].append(iface)
 
-    if CONNECTION_PREFERENCE == 'cell':
-        if iftypes['bridge']:
-            iface = next((iface for iface in iftypes['bridge'] if iface.addr.family == socket.AF_INET), None)
-            if iface:
-                initial_output = "Assuming proxy will be accessed over hotspot (%s) at %s\n" % (iface.name, iface.addr.address)
-                PROXY_HOST = iface.addr.address
-        elif iftypes['en']:
-            iface = next((iface for iface in iftypes['en'] if iface.addr.family == socket.AF_INET), None)
-            if iface:
-                initial_output += "Assuming proxy will be accessed over WiFi (%s) at %s\n" % (iface.name, iface.addr.address)
-                PROXY_HOST = iface.addr.address
-        else:
-            initial_output += 'Warning: could not get WiFi address; assuming %s\n' % PROXY_HOST
+    PROXY_HOST, initial_output = set_proxy_host(iftypes, PROXY_HOST)
+    CONNECT_HOST_IPV4, CONNECT_HOST_IPV6, ipv4_output, ipv6_output = set_connect_host(iftypes, CONNECTION_PREFERENCE, initial_output)
 
-        if iftypes['cell']:
-            iface_ipv4 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET), None)
-            iface_ipv6 = None
-
-            if iface_ipv4:
-                iface_ipv4.addr.address
-                ipv4_output += "Will connect to IPv4 servers over interface %s at %s\n" % (iface_ipv4.name, iface_ipv4.addr.address)
-                CONNECT_HOST_IPV4 = iface_ipv4.addr.address
-
-                # Create a list of all IPv6 addresse that are globally routable and match the IPv4 interface
-                iface_ipv6_list = [iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6 and iface.addr.address and is_globally_routable(iface.addr.address) and iface.name == iface_ipv4.name]
-
-                # Select the last IPv6 address to select the temporary address for reduced tracking
-                iface_ipv6 = iface_ipv6_list[-1] if iface_ipv6_list else None
-
-            if iface_ipv6 is None:
-                # Create a list of all IPv6 addresses that are globally routable
-                iface_ipv6_list = [iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6 and iface.addr.address and is_globally_routable(iface.addr.address)]
-
-                # Select the last IPv6 address to select the temporary address for reduced tracking
-                iface_ipv6 = iface_ipv6_list[-1] if iface_ipv6_list else None
-
-            if iface_ipv6:
-                iface_ipv6.addr.address
-                ipv6_output += "Will connect to IPv6 servers over interface %s at %s\n" % (iface_ipv6.name, iface_ipv6.addr.address)
-                # Test IPv6 connectivity
-                try:
-                    test_socket = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-                    test_socket.settimeout(5)
-                    test_socket.bind((iface_ipv6.addr.address, 0))
-                    test_socket.connect((resolve_address("www.google.com")["ipv6"], 80))
-                    test_socket.close()
-                    CONNECT_HOST_IPV6 = iface_ipv6.addr.address
-                except Exception as e:
-                    ipv6_output += "Failed to connect to www.google.com over IPv6 due to: %s\n" % str(e)
-                    CONNECT_HOST_IPV6 = None
-                finally:
-                    test_socket.close()
-    elif CONNECTION_PREFERENCE == 'wifi':
-        if iftypes['bridge']:
-            iface = next((iface for iface in iftypes['bridge'] if iface.addr.family == socket.AF_INET), None)
-            if iface:
-                initial_output = "Assuming proxy will be accessed over hotspot (%s) at %s\n" % (iface.name, iface.addr.address)
-                PROXY_HOST = iface.addr.address
-        elif iftypes['en']:
-            iface = next((iface for iface in iftypes['en'] if iface.addr.family == socket.AF_INET), None)
-            if iface:
-                initial_output += "Assuming proxy will be accessed over WiFi (%s) at %s\n" % (iface.name, iface.addr.address)
-                PROXY_HOST = iface.addr.address
-            #this level
-            iface_ipv4 = next((iface for iface in iftypes['en'] if iface.addr.family == socket.AF_INET), None)
-            iface_ipv6 = None
-
-            if iface_ipv4:
-                iface_ipv4.addr.address
-                ipv4_output += "Will connect to IPv4 servers over interface %s at %s\n" % (iface_ipv4.name, iface_ipv4.addr.address)
-                CONNECT_HOST_IPV4 = iface_ipv4.addr.address
-
-                # Create a list of all IPv6 addresse that are globally routable and match the IPv4 interface
-                iface_ipv6_list = [iface for iface in iftypes['en'] if iface.addr.family == socket.AF_INET6 and iface.addr.address and is_globally_routable(iface.addr.address) and iface.name == iface_ipv4.name]
-
-                # Select the last IPv6 address to select the temporary address for reduced tracking
-                iface_ipv6 = iface_ipv6_list[-1] if iface_ipv6_list else None
-
-            if iface_ipv6 is None:
-                # Create a list of all IPv6 addresses that are globally routable
-                iface_ipv6_list = [iface for iface in iftypes['en'] if iface.addr.family == socket.AF_INET6 and iface.addr.address and is_globally_routable(iface.addr.address)]
-
-                # Select the last IPv6 address to select the temporary address for reduced tracking
-                iface_ipv6 = iface_ipv6_list[-1] if iface_ipv6_list else None
-
-            if iface_ipv6:
-                iface_ipv6.addr.address
-                ipv6_output += "Will connect to IPv6 servers over interface %s at %s\n" % (iface_ipv6.name, iface_ipv6.addr.address)
-                # Test IPv6 connectivity
-                try:
-                    test_socket = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-                    test_socket.settimeout(5)
-                    test_socket.bind((iface_ipv6.addr.address, 0))
-                    test_socket.connect((resolve_address("www.google.com")["ipv6"], 80))
-                    test_socket.close()
-                    CONNECT_HOST_IPV6 = iface_ipv6.addr.address
-                except Exception as e:
-                    ipv6_output += "Failed to connect to www.google.com over IPv6 due to: %s\n" % str(e)
-                    CONNECT_HOST_IPV6 = None
-                finally:
-                    test_socket.close()
-
-        else:
-            initial_output += 'Warning: could not get WiFi address; assuming %s\n' % PROXY_HOST
 
 
 
